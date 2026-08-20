@@ -1,0 +1,100 @@
+import unittest
+from unittest.mock import patch
+
+from bot.modules.arxiv import extract_arxiv_id, generate_tldr, paper_message_content, parse_api_response
+from bot.modules.crossref import extract_doi, parse_crossref_response, work_message_content
+from bot.modules.ieee import (
+    article_message_content,
+    extract_ieee_article_number,
+    parse_ieee_response,
+)
+
+
+ATOM_RESPONSE = b'''<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry>
+    <id>http://arxiv.org/abs/2401.12345v2</id>
+    <title>  A useful paper  </title>
+    <summary> An abstract. </summary>
+    <published>2024-01-20T12:00:00Z</published>
+    <author><name>Ada Lovelace</name></author>
+    <category term="cs.LG" />
+    <category term="cs.CL" />
+  </entry>
+</feed>'''
+
+IEEE_RESPONSE = b'''{"articles":[{"article_number":"1234567","title":"An IEEE Paper",
+"abstract":"A useful abstract.","authors":[{"full_name":"Ada Lovelace"}],
+"publication_date":"2026-01-01","doi":"10.1109/TEST.1234567"}]}'''
+
+CROSSREF_RESPONSE = b'''{"message":{"DOI":"10.1038/nphys1170","title":["Measured measurement"],
+"abstract":"<jats:p>A useful <jats:b>abstract</jats:b>.</jats:p>",
+"author":[{"given":"Markus","family":"Aspelmeyer"}],
+"published":{"date-parts":[[2009,1]]}}}'''
+
+
+class ArxivTests(unittest.TestCase):
+    def test_extracts_modern_and_pdf_links(self):
+        self.assertEqual(extract_arxiv_id("see https://arxiv.org/abs/2401.12345v2"), "2401.12345v2")
+        self.assertEqual(extract_arxiv_id("https://arxiv.org/pdf/2401.12345.pdf"), "2401.12345")
+
+    def test_rejects_non_arxiv_urls(self):
+        self.assertIsNone(extract_arxiv_id("https://example.com/abs/2401.12345"))
+
+    def test_parses_atom_metadata(self):
+        paper = parse_api_response(ATOM_RESPONSE, "2401.12345")
+        self.assertEqual(paper.title, "A useful paper")
+        self.assertEqual(paper.authors, ("Ada Lovelace",))
+        self.assertEqual(paper.categories, ("cs.LG", "cs.CL"))
+        self.assertEqual(paper.abs_url, "https://arxiv.org/abs/2401.12345v2")
+
+    @patch("bot.modules.arxiv.urlopen")
+    def test_generates_tldr_from_router_response(self, mock_urlopen):
+        response = unittest.mock.Mock()
+        response.__enter__ = lambda value: response
+        response.__exit__ = unittest.mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"A concise summary."}}]}'
+        mock_urlopen.return_value = response
+
+        self.assertEqual(generate_tldr("The abstract describes a method."), "A concise summary.")
+        payload = mock_urlopen.call_args.args[0].data
+        self.assertIn(b'"temperature": 0.1', payload)
+        self.assertIn(b'"stream": false', payload)
+
+    def test_skips_tldr_for_empty_abstract(self):
+        self.assertIsNone(generate_tldr(""))
+
+    def test_replaces_url_and_preserves_context(self):
+        paper = parse_api_response(ATOM_RESPONSE, "2401.12345")
+        content = "https://arxiv.org/abs/2401.12345v2 lorem ipsum"
+        self.assertEqual(
+            paper_message_content(content, paper),
+            "[A useful paper](https://arxiv.org/abs/2401.12345v2) lorem ipsum",
+        )
+
+    def test_parses_ieee_metadata_and_preserves_context(self):
+        self.assertEqual(
+            extract_ieee_article_number("read https://ieeexplore.ieee.org/document/1234567"),
+            "1234567",
+        )
+        article = parse_ieee_response(IEEE_RESPONSE, "1234567")
+        self.assertEqual(article.authors, ("Ada Lovelace",))
+        self.assertEqual(
+            article_message_content("https://ieeexplore.ieee.org/document/1234567 lorem ipsum", article),
+            "[An IEEE Paper](https://ieeexplore.ieee.org/document/1234567) lorem ipsum",
+        )
+
+    def test_parses_crossref_metadata_and_preserves_context(self):
+        doi = "10.1038/nphys1170"
+        self.assertEqual(extract_doi("read https://doi.org/" + doi), doi)
+        work = parse_crossref_response(CROSSREF_RESPONSE, doi)
+        self.assertEqual(work.abstract, "A useful abstract .")
+        self.assertEqual(work.authors, ("Markus Aspelmeyer",))
+        self.assertEqual(
+            work_message_content("https://doi.org/10.1038/nphys1170 lorem ipsum", work),
+            "[Measured measurement](https://doi.org/10.1038/nphys1170) lorem ipsum",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
