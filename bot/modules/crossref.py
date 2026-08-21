@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 import discord
 
-from bot.modules.arxiv import generate_tldr
+from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
 from bot.utils import DeletableView
 
 
@@ -89,7 +89,7 @@ def fetch_work(doi: str) -> CrossrefWork:
 def work_message_content(content: str, work: CrossrefWork) -> str:
     """Replace the submitted DOI URL while preserving the user's context."""
     match = DOI_URL_RE.search(content)
-    work_link = f"[{discord.utils.escape_markdown(work.title)}]({work.url})"
+    work_link = discord.utils.escape_markdown(work.title)
     if not match:
         return work_link
     return content[: match.start()] + work_link + content[match.end() :]
@@ -99,7 +99,7 @@ def work_embed(work: CrossrefWork, author: discord.abc.User, tldr: str | None = 
     embed = discord.Embed(
         title=work.title[:256],
         url=work.url,
-        description=work.abstract[:4093] + ("..." if len(work.abstract) > 4093 else ""),
+        description=work.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(work.abstract) > ABSTRACT_LIMIT else ""),
         color=discord.Color.green(),
     )
     embed.set_author(name=f"DOI:{work.doi}")
@@ -133,6 +133,9 @@ class CrossrefModule:
                 tldr = None
             await message.channel.send(
                 content=work_message_content(message.content, work),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await message.channel.send(
                 embed=work_embed(work, message.author, tldr),
                 view=DeletableView(work.url, message.author.id),
                 allowed_mentions=discord.AllowedMentions.none(),

@@ -13,7 +13,7 @@ from urllib.request import Request, urlopen
 
 import discord
 
-from bot.modules.arxiv import generate_tldr
+from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
 from bot.utils import DeletableView
 
 
@@ -89,7 +89,7 @@ def fetch_article(article_number: str) -> IEEEArticle:
 def article_message_content(content: str, article: IEEEArticle) -> str:
     """Replace the submitted IEEE URL while preserving the user's context."""
     match = IEEE_URL_RE.search(content)
-    article_link = f"[{discord.utils.escape_markdown(article.title)}]({article.url})"
+    article_link = discord.utils.escape_markdown(article.title)
     if not match:
         return article_link
     return content[: match.start()] + article_link + content[match.end() :]
@@ -99,7 +99,7 @@ def article_embed(article: IEEEArticle, author: discord.abc.User, tldr: str | No
     embed = discord.Embed(
         title=article.title[:256],
         url=article.url,
-        description=article.abstract[:4093] + ("..." if len(article.abstract) > 4093 else ""),
+        description=article.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(article.abstract) > ABSTRACT_LIMIT else ""),
         color=discord.Color.blue(),
     )
     embed.set_author(name=f"IEEE:{article.article_number}")
@@ -133,6 +133,9 @@ class IEEEModule:
                 tldr = None
             await message.channel.send(
                 content=article_message_content(message.content, article),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await message.channel.send(
                 embed=article_embed(article, message.author, tldr),
                 view=DeletableView(article.url, message.author.id),
                 allowed_mentions=discord.AllowedMentions.none(),

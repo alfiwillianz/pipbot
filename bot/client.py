@@ -12,6 +12,7 @@ from discord.ext import commands
 from bot.modules.arxiv import ArxivModule
 from bot.modules.base import WebModule
 from bot.modules.crossref import CrossrefModule
+from bot.modules.elsevier import ElsevierModule
 from bot.modules.ieee import IEEEModule
 
 
@@ -42,7 +43,9 @@ class WebLinkBot(commands.Bot):
 
 def create_bot(modules: Iterable[WebModule] | None = None) -> WebLinkBot:
     """Build a bot, optionally replacing the default module list."""
-    return WebLinkBot(modules if modules is not None else (ArxivModule(), IEEEModule(), CrossrefModule()))
+    return WebLinkBot(
+        modules if modules is not None else (ArxivModule(), IEEEModule(), ElsevierModule(), CrossrefModule())
+    )
 
 
 def main() -> None:

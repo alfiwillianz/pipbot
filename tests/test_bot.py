@@ -3,6 +3,7 @@ from unittest.mock import patch
 
 from bot.modules.arxiv import extract_arxiv_id, generate_tldr, paper_message_content, parse_api_response
 from bot.modules.crossref import extract_doi, parse_crossref_response, work_message_content
+from bot.modules.elsevier import extract_elsevier_doi, extract_elsevier_pii, parse_elsevier_response
 from bot.modules.ieee import (
     article_message_content,
     extract_ieee_article_number,
@@ -31,6 +32,14 @@ CROSSREF_RESPONSE = b'''{"message":{"DOI":"10.1038/nphys1170","title":["Measured
 "abstract":"<jats:p>A useful <jats:b>abstract</jats:b>.</jats:p>",
 "author":[{"given":"Markus","family":"Aspelmeyer"}],
 "published":{"date-parts":[[2009,1]]}}}'''
+
+ELSEVIER_RESPONSE = b'''<abstracts-retrieval-response xmlns:dc="http://purl.org/dc/elements/1.1/">
+<coredata><dc:identifier>doi:10.1016/j.test.2026.1</dc:identifier>
+<dc:title>Elsevier Paper</dc:title><prism:coverDate xmlns:prism="http://prismstandard.org/namespaces/basic/2.0/">2026-01-01</prism:coverDate>
+<dc:description>Useful abstract.</dc:description></coredata>
+<authors><author><ce:given-name xmlns:ce="http://www.elsevier.com/xml/common/dtd">Ada</ce:given-name>
+<ce:surname xmlns:ce="http://www.elsevier.com/xml/common/dtd">Lovelace</ce:surname></author></authors>
+</abstracts-retrieval-response>'''
 
 
 class ArxivTests(unittest.TestCase):
@@ -69,7 +78,7 @@ class ArxivTests(unittest.TestCase):
         content = "https://arxiv.org/abs/2401.12345v2 lorem ipsum"
         self.assertEqual(
             paper_message_content(content, paper),
-            "[A useful paper](https://arxiv.org/abs/2401.12345v2) lorem ipsum",
+            "A useful paper lorem ipsum",
         )
 
     def test_parses_ieee_metadata_and_preserves_context(self):
@@ -81,7 +90,7 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(article.authors, ("Ada Lovelace",))
         self.assertEqual(
             article_message_content("https://ieeexplore.ieee.org/document/1234567 lorem ipsum", article),
-            "[An IEEE Paper](https://ieeexplore.ieee.org/document/1234567) lorem ipsum",
+            "An IEEE Paper lorem ipsum",
         )
 
     def test_parses_crossref_metadata_and_preserves_context(self):
@@ -92,8 +101,23 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(work.authors, ("Markus Aspelmeyer",))
         self.assertEqual(
             work_message_content("https://doi.org/10.1038/nphys1170 lorem ipsum", work),
-            "[Measured measurement](https://doi.org/10.1038/nphys1170) lorem ipsum",
+            "Measured measurement lorem ipsum",
         )
+
+    def test_parses_elsevier_abstract_metadata(self):
+        doi = "10.1016/j.test.2026.1"
+        self.assertEqual(extract_elsevier_doi("https://doi.org/" + doi), doi)
+        self.assertEqual(
+            extract_elsevier_pii(
+                "https://www.sciencedirect.com/science/article/abs/pii/S1568494626015255"
+            ),
+            "S1568494626015255",
+        )
+        self.assertIsNone(extract_elsevier_doi("https://doi.org/10.1038/nphys1170"))
+        work = parse_elsevier_response(ELSEVIER_RESPONSE, doi)
+        self.assertEqual(work.title, "Elsevier Paper")
+        self.assertEqual(work.abstract, "Useful abstract.")
+        self.assertEqual(work.authors, ("Ada Lovelace",))
 
 
 if __name__ == "__main__":

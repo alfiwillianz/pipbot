@@ -30,6 +30,7 @@ ARXIV_ID_RE = re.compile(
 LLM_URL = os.environ.get("LLM_BASE_URL", "http://host.docker.internal:20128/v1/chat/completions")
 LLM_MODEL = os.environ.get("LLM_MODEL", "oc/deepseek-v4-flash-free(max)")
 LLM_TEMPERATURE = 0.1
+ABSTRACT_LIMIT = 3500
 ATOM = "{http://www.w3.org/2005/Atom}"
 LOGGER = logging.getLogger(__name__)
 
@@ -147,15 +148,15 @@ def paper_message_content(content: str, paper: Paper) -> str:
     match = ARXIV_URL_RE.search(content)
     if not match:
         return f"[{discord.utils.escape_markdown(paper.title)}]({paper.abs_url})"
-    paper_link = f"[{discord.utils.escape_markdown(paper.title)}]({paper.abs_url})"
-    return content[: match.start()] + paper_link + content[match.end() :]
+    paper_name = discord.utils.escape_markdown(paper.title)
+    return content[: match.start()] + paper_name + content[match.end() :]
 
 
 def paper_embed(paper: Paper, author: discord.abc.User, tldr: str | None = None) -> discord.Embed:
     embed = discord.Embed(
         title=paper.title[:256],
         url=paper.abs_url,
-        description=paper.summary[:4093] + ("..." if len(paper.summary) > 4093 else ""),
+        description=paper.summary[: ABSTRACT_LIMIT - 3] + ("..." if len(paper.summary) > ABSTRACT_LIMIT else ""),
         color=discord.Color.dark_red(),
     )
     embed.set_author(name=f"arXiv:{paper.arxiv_id}")
@@ -189,6 +190,9 @@ class ArxivModule:
                 tldr = None
             await message.channel.send(
                 content=paper_message_content(message.content, paper),
+                allowed_mentions=discord.AllowedMentions.none(),
+            )
+            await message.channel.send(
                 embed=paper_embed(paper, message.author, tldr),
                 view=DeletableView(paper.abs_url, message.author.id),
                 allowed_mentions=discord.AllowedMentions.none(),
