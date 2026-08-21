@@ -10,6 +10,7 @@ import discord
 from discord.ext import commands
 
 from bot.modules.arxiv import ArxivModule
+from bot.modules.chat import ChatModule
 from bot.modules.base import WebModule
 from bot.modules.crossref import CrossrefModule
 from bot.modules.elsevier import ElsevierModule
@@ -27,12 +28,16 @@ class WebLinkBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.modules = tuple(modules)
+        self.chat_module = ChatModule()
 
     async def on_ready(self) -> None:
         LOGGER.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
 
     async def on_message(self, message: discord.Message) -> None:
         if message.author.bot:
+            return
+        if self.user and self.user in message.mentions:
+            await self.chat_module.handle(message, self.user.id)
             return
         for module in self.modules:
             if module.matches(message.content):
