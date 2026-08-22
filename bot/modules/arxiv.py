@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
 import html
 import json
 import logging
@@ -10,6 +11,8 @@ import os
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
 from datetime import datetime
 from urllib.request import Request, urlopen
 
@@ -31,6 +34,7 @@ LLM_URL = os.environ.get("LLM_BASE_URL", "http://host.docker.internal:20128/v1/c
 LLM_MODEL = os.environ.get("LLM_MODEL", "oc/deepseek-v4-flash-free(max)")
 LLM_TEMPERATURE = 0.1
 ABSTRACT_LIMIT = 3500
+PAPER_CACHE_TTL = timedelta(days=14)
 ATOM = "{http://www.w3.org/2005/Atom}"
 LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +49,73 @@ class Paper:
     published: datetime | None
     abs_url: str
     pdf_url: str
+
+
+def _cache_directory() -> Path:
+    return Path(os.environ.get("PIPBOT_CACHE_DIR", "data/cache")) / "arxiv"
+
+
+def _cache_key(arxiv_id: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", arxiv_id)
+
+
+def _clear_expired_cache(directory: Path) -> None:
+    cutoff = datetime.now(timezone.utc) - PAPER_CACHE_TTL
+    for metadata_path in directory.glob("*.json"):
+        if datetime.fromtimestamp(metadata_path.stat().st_mtime, timezone.utc) < cutoff:
+            metadata_path.unlink(missing_ok=True)
+            metadata_path.with_suffix(".pdf").unlink(missing_ok=True)
+
+
+def _load_cached_paper(arxiv_id: str) -> tuple[Paper, bytes | None] | None:
+    directory = _cache_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    _clear_expired_cache(directory)
+    metadata_path = directory / f"{_cache_key(arxiv_id)}.json"
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        published = data.get("published")
+        paper = Paper(
+            arxiv_id=str(data["arxiv_id"]),
+            title=str(data["title"]),
+            summary=str(data["summary"]),
+            authors=tuple(data["authors"]),
+            categories=tuple(data["categories"]),
+            published=datetime.fromisoformat(published) if published else None,
+            abs_url=str(data["abs_url"]),
+            pdf_url=str(data["pdf_url"]),
+        )
+        pdf_path = metadata_path.with_suffix(".pdf")
+        pdf = pdf_path.read_bytes() if pdf_path.exists() else None
+        if pdf is not None and not pdf.startswith(b"%PDF"):
+            pdf_path.unlink(missing_ok=True)
+            pdf = None
+        return paper, pdf
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        metadata_path.unlink(missing_ok=True)
+        metadata_path.with_suffix(".pdf").unlink(missing_ok=True)
+        return None
+
+
+def _save_cached_paper(paper: Paper, pdf: bytes | None) -> None:
+    directory = _cache_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata_path = directory / f"{_cache_key(paper.arxiv_id)}.json"
+    metadata_path.write_text(
+        json.dumps({
+            "arxiv_id": paper.arxiv_id,
+            "title": paper.title,
+            "summary": paper.summary,
+            "authors": paper.authors,
+            "categories": paper.categories,
+            "published": paper.published.isoformat() if paper.published else None,
+            "abs_url": paper.abs_url,
+            "pdf_url": paper.pdf_url,
+        }),
+        encoding="utf-8",
+    )
+    if pdf is not None:
+        metadata_path.with_suffix(".pdf").write_bytes(pdf)
 
 
 def extract_arxiv_id(content: str) -> str | None:
@@ -100,6 +171,16 @@ def fetch_paper(arxiv_id: str) -> Paper:
     request = Request(ARXIV_API_URL.format(arxiv_id), headers={"User-Agent": "ArxivEmbedBot/1.0"})
     with urlopen(request, timeout=15) as response:
         return parse_api_response(response.read(), arxiv_id)
+
+
+def fetch_pdf(pdf_url: str) -> bytes:
+    """Fetch and validate an arXiv PDF."""
+    request = Request(pdf_url, headers={"Accept": "application/pdf", "User-Agent": "ArxivEmbedBot/1.0"})
+    with urlopen(request, timeout=60) as response:
+        payload = response.read()
+    if not payload.startswith(b"%PDF"):
+        raise ValueError("arXiv did not return a PDF")
+    return payload
 
 
 def generate_tldr(abstract: str) -> str | None:
@@ -182,7 +263,18 @@ class ArxivModule:
             return
 
         try:
-            paper = await asyncio.to_thread(fetch_paper, arxiv_id)
+            cached = await asyncio.to_thread(_load_cached_paper, arxiv_id)
+            if cached:
+                paper, pdf = cached
+            else:
+                paper = await asyncio.to_thread(fetch_paper, arxiv_id)
+                pdf = None
+            if pdf is None:
+                try:
+                    pdf = await asyncio.to_thread(fetch_pdf, paper.pdf_url)
+                except Exception:
+                    LOGGER.exception("Failed to fetch PDF for arXiv paper %s", arxiv_id)
+                await asyncio.to_thread(_save_cached_paper, paper, pdf)
             try:
                 tldr = await asyncio.to_thread(generate_tldr, paper.summary)
             except Exception:
@@ -195,6 +287,7 @@ class ArxivModule:
             await message.channel.send(
                 embed=paper_embed(paper, message.author, tldr),
                 view=DeletableView(paper.abs_url, message.author.id),
+                file=discord.File(BytesIO(pdf), filename=f"arxiv-{paper.arxiv_id.replace('/', '_')}.pdf") if pdf else None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             await message.delete()

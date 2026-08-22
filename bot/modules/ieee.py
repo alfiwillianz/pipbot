@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timedelta, timezone
+from io import BytesIO
 import json
 import logging
 import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
@@ -23,6 +26,8 @@ IEEE_URL_RE = re.compile(
 )
 IEEE_API_URL = "https://ieeexploreapi.ieee.org/api/v1/search/articles"
 IEEE_API_KEY = os.environ.get("IEEE_API_KEY", "")
+IEEE_PDF_URL = "https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={}"
+PAPER_CACHE_TTL = timedelta(days=14)
 LOGGER = logging.getLogger(__name__)
 
 
@@ -35,6 +40,69 @@ class IEEEArticle:
     publication_date: str
     doi: str
     url: str
+
+
+def _cache_directory() -> Path:
+    return Path(os.environ.get("PIPBOT_CACHE_DIR", "data/cache")) / "ieee"
+
+
+def _clear_expired_cache(directory: Path) -> None:
+    cutoff = datetime.now(timezone.utc) - PAPER_CACHE_TTL
+    for metadata_path in directory.glob("*.json"):
+        modified = datetime.fromtimestamp(metadata_path.stat().st_mtime, timezone.utc)
+        if modified < cutoff:
+            metadata_path.unlink(missing_ok=True)
+            metadata_path.with_suffix(".pdf").unlink(missing_ok=True)
+
+
+def _load_cached_paper(article_number: str) -> tuple[IEEEArticle, bytes | None] | None:
+    directory = _cache_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    _clear_expired_cache(directory)
+    metadata_path = directory / f"{article_number}.json"
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        article = IEEEArticle(
+            article_number=str(data["article_number"]),
+            title=str(data["title"]),
+            abstract=str(data["abstract"]),
+            authors=tuple(data["authors"]),
+            publication_date=str(data["publication_date"]),
+            doi=str(data["doi"]),
+            url=str(data["url"]),
+        )
+        pdf_path = metadata_path.with_suffix(".pdf")
+        pdf = pdf_path.read_bytes() if pdf_path.exists() else None
+        if pdf is not None and not pdf.startswith(b"%PDF"):
+            pdf_path.unlink(missing_ok=True)
+            pdf = None
+        return article, pdf
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        metadata_path.unlink(missing_ok=True)
+        metadata_path.with_suffix(".pdf").unlink(missing_ok=True)
+        return None
+
+
+def _save_cached_paper(article: IEEEArticle, pdf: bytes | None) -> None:
+    directory = _cache_directory()
+    directory.mkdir(parents=True, exist_ok=True)
+    metadata_path = directory / f"{article.article_number}.json"
+    metadata_path.write_text(
+        json.dumps(
+            {
+                "article_number": article.article_number,
+                "title": article.title,
+                "abstract": article.abstract,
+                "authors": article.authors,
+                "publication_date": article.publication_date,
+                "doi": article.doi,
+                "url": article.url,
+            }
+        ),
+        encoding="utf-8",
+    )
+    if pdf is not None:
+        metadata_path.with_suffix(".pdf").write_bytes(pdf)
 
 
 def extract_ieee_article_number(content: str) -> str | None:
@@ -86,6 +154,58 @@ def fetch_article(article_number: str) -> IEEEArticle:
         return parse_ieee_response(response.read(), article_number)
 
 
+def fetch_pdf(article_number: str) -> bytes:
+    """Fetch an IEEE PDF, preserving the browser session IEEE uses for access."""
+    if os.environ.get("IEEE_PDF_BROWSER", "1") == "0":
+        return _fetch_pdf_http(article_number)
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        return _fetch_pdf_http(article_number)
+
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch(headless=True)
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
+        )
+        try:
+            page = context.new_page()
+            page.goto(
+                f"https://ieeexplore.ieee.org/document/{article_number}",
+                wait_until="domcontentloaded",
+                timeout=60_000,
+            )
+            response = context.request.get(
+                IEEE_PDF_URL.format(article_number),
+                headers={"Referer": f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={article_number}"},
+                timeout=120_000,
+            )
+            payload = response.body()
+            if response.status != 200 or not payload.startswith(b"%PDF"):
+                raise ValueError(f"IEEE returned HTTP {response.status}, not a PDF")
+            return payload
+        finally:
+            browser.close()
+
+
+def _fetch_pdf_http(article_number: str) -> bytes:
+    """Fallback for deployments that do not have Playwright installed."""
+    headers = {
+        "Accept": "application/pdf",
+        "Referer": f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={article_number}",
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36",
+    }
+    if cookie := os.environ.get("IEEE_PDF_COOKIE"):
+        headers["Cookie"] = cookie
+
+    request = Request(IEEE_PDF_URL.format(article_number), headers=headers)
+    with urlopen(request, timeout=30) as response:
+        payload = response.read()
+    if not payload.startswith(b"%PDF"):
+        raise ValueError("IEEE did not return a PDF")
+    return payload
+
+
 def article_message_content(content: str, article: IEEEArticle) -> str:
     """Replace the submitted IEEE URL while preserving the user's context."""
     match = IEEE_URL_RE.search(content)
@@ -125,7 +245,18 @@ class IEEEModule:
             return
 
         try:
-            article = await asyncio.to_thread(fetch_article, article_number)
+            cached = await asyncio.to_thread(_load_cached_paper, article_number)
+            if cached:
+                article, pdf = cached
+            else:
+                article = await asyncio.to_thread(fetch_article, article_number)
+                pdf = None
+            if pdf is None:
+                try:
+                    pdf = await asyncio.to_thread(fetch_pdf, article_number)
+                except Exception:
+                    LOGGER.exception("Failed to fetch PDF for IEEE article %s", article_number)
+                await asyncio.to_thread(_save_cached_paper, article, pdf)
             try:
                 tldr = await asyncio.to_thread(generate_tldr, article.abstract)
             except Exception:
@@ -138,6 +269,7 @@ class IEEEModule:
             await message.channel.send(
                 embed=article_embed(article, message.author, tldr),
                 view=DeletableView(article.url, message.author.id),
+                file=discord.File(BytesIO(pdf), filename=f"ieee-{article.article_number}.pdf") if pdf else None,
                 allowed_mentions=discord.AllowedMentions.none(),
             )
             await message.delete()

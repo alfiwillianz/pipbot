@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from collections.abc import Iterable
@@ -17,6 +18,7 @@ from bot.modules.ieee import IEEEModule
 
 
 LOGGER = logging.getLogger(__name__)
+DUPLICATE_NOTICE_TTL = 10
 
 
 class WebLinkBot(commands.Bot):
@@ -27,6 +29,14 @@ class WebLinkBot(commands.Bot):
         intents.message_content = True
         super().__init__(command_prefix="!", intents=intents)
         self.modules = tuple(modules)
+        self._processing_links: set[tuple[int, str]] = set()
+
+    async def _delete_later(self, message: discord.Message, delay: float) -> None:
+        await asyncio.sleep(delay)
+        try:
+            await message.delete()
+        except discord.HTTPException:
+            LOGGER.debug("Could not delete temporary status message %s", message.id)
 
     async def on_ready(self) -> None:
         LOGGER.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "unknown")
@@ -36,7 +46,30 @@ class WebLinkBot(commands.Bot):
             return
         for module in self.modules:
             if module.matches(message.content):
-                await module.handle(message)
+                key = (message.channel.id, message.content.strip().casefold())
+                if key in self._processing_links:
+                    notice = await message.reply(
+                        "I'm already processing that link.",
+                        mention_author=False,
+                        allowed_mentions=discord.AllowedMentions.none(),
+                    )
+                    asyncio.create_task(self._delete_later(notice, DUPLICATE_NOTICE_TTL))
+                    return
+
+                self._processing_links.add(key)
+                status = await message.reply(
+                    "Processing...",
+                    mention_author=False,
+                    allowed_mentions=discord.AllowedMentions.none(),
+                )
+                try:
+                    await module.handle(message)
+                finally:
+                    self._processing_links.discard(key)
+                    try:
+                        await status.delete()
+                    except discord.HTTPException:
+                        LOGGER.debug("Could not delete processing status for message %s", message.id)
                 break
         await self.process_commands(message)
 

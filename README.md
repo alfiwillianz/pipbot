@@ -29,6 +29,8 @@ python -m bot
 
 The embed currently includes the title, abstract, authors, publication date, and arXiv source categories. TLDR generation is intentionally not included until an LLM endpoint is configured. The **Open paper** button is a native Discord link button. The **Delete** button can be used only by the person who posted the original link or a member with `Manage Messages`.
 
+IEEE PDFs are attached through a Playwright browser session that preserves IEEE's temporary WAF cookies. arXiv PDFs are fetched directly from arXiv. Both paper types are cached under `PIPBOT_CACHE_DIR` and deleted after 14 days. The IEEE HTTP fallback can use `IEEE_PDF_COOKIE` with a current browser Cookie header, but the cookie is temporary and must be kept out of git. PDF attachment is skipped if the source rejects the request.
+
 ## Adding a module
 
 Add a class under `bot/modules/` implementing the `WebModule` protocol:
