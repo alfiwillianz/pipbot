@@ -5,6 +5,13 @@ services:
     env_file:
       - path: .env
         required: false
+    environment:
+      PIPBOT_CACHE_DIR: /app/data/cache
     extra_hosts:
       - "host.docker.internal:host-gateway"
     init: true
+    volumes:
+      - pipbot_data:/app/data
+
+volumes:
+  pipbot_data:

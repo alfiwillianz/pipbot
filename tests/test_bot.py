@@ -1,14 +1,23 @@
+import asyncio
+import os
+import tempfile
+import time
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from bot.modules.arxiv import extract_arxiv_id, generate_tldr, paper_message_content, parse_api_response
 from bot.modules.crossref import extract_doi, parse_crossref_response, work_message_content
 from bot.modules.elsevier import extract_elsevier_doi, extract_elsevier_pii, parse_elsevier_response
 from bot.modules.ieee import (
+    _load_cached_paper,
+    _save_cached_paper,
     article_message_content,
     extract_ieee_article_number,
+    fetch_pdf,
     parse_ieee_response,
 )
+from bot.client import WebLinkBot
 
 
 ATOM_RESPONSE = b'''<?xml version="1.0" encoding="UTF-8"?>
@@ -93,6 +102,33 @@ class ArxivTests(unittest.TestCase):
             "An IEEE Paper lorem ipsum",
         )
 
+    @patch.dict("bot.modules.ieee.os.environ", {"IEEE_PDF_BROWSER": "0"}, clear=False)
+    @patch("bot.modules.ieee.urlopen")
+    def test_fetches_pdf_bytes(self, mock_urlopen):
+        response = unittest.mock.Mock()
+        response.__enter__ = lambda value: response
+        response.__exit__ = unittest.mock.Mock(return_value=False)
+        response.read.return_value = b"%PDF-1.4 test"
+        mock_urlopen.return_value = response
+
+        self.assertEqual(fetch_pdf("1234567"), b"%PDF-1.4 test")
+        request = mock_urlopen.call_args.args[0]
+        self.assertIn("arnumber=1234567", request.full_url)
+        self.assertEqual(request.get_header("Accept"), "application/pdf")
+
+    def test_expires_cached_papers_after_two_weeks(self):
+        article = parse_ieee_response(IEEE_RESPONSE, "1234567")
+        with tempfile.TemporaryDirectory() as cache_dir, patch.dict(
+            "bot.modules.ieee.os.environ", {"PIPBOT_CACHE_DIR": cache_dir}, clear=False
+        ):
+            _save_cached_paper(article, b"%PDF-1.4 test")
+            self.assertIsNotNone(_load_cached_paper("1234567"))
+            metadata_path = os.path.join(cache_dir, "ieee", "1234567.json")
+            old = time.time() - (15 * 24 * 60 * 60)
+            os.utime(metadata_path, (old, old))
+            self.assertIsNone(_load_cached_paper("1234567"))
+            self.assertFalse(os.path.exists(metadata_path))
+
     def test_parses_crossref_metadata_and_preserves_context(self):
         doi = "10.1038/nphys1170"
         self.assertEqual(extract_doi("read https://doi.org/" + doi), doi)
@@ -118,6 +154,47 @@ class ArxivTests(unittest.TestCase):
         self.assertEqual(work.title, "Elsevier Paper")
         self.assertEqual(work.abstract, "Useful abstract.")
         self.assertEqual(work.authors, ("Ada Lovelace",))
+
+
+class DispatchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_duplicate_link_is_rejected_while_processing(self):
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def handle(_message):
+            started.set()
+            await release.wait()
+
+        module = Mock()
+        module.matches.return_value = True
+        module.handle = handle
+        bot = WebLinkBot([module])
+        bot.process_commands = AsyncMock()
+
+        status = SimpleNamespace(delete=AsyncMock())
+        first = SimpleNamespace(
+            id=1,
+            content="https://example.com/paper",
+            author=SimpleNamespace(bot=False),
+            mentions=[],
+            channel=SimpleNamespace(id=10),
+            reply=AsyncMock(return_value=status),
+        )
+        duplicate_reply = AsyncMock()
+        duplicate = SimpleNamespace(**{**vars(first), "reply": duplicate_reply, "id": 2})
+        bot._delete_later = AsyncMock()
+
+        task = asyncio.create_task(bot.on_message(first))
+        await started.wait()
+        await bot.on_message(duplicate)
+        duplicate_reply.assert_awaited_once()
+        self.assertIn("already processing", duplicate_reply.await_args.args[0])
+        await asyncio.sleep(0)
+        bot._delete_later.assert_awaited_once_with(duplicate_reply.return_value, 10)
+
+        release.set()
+        await task
+        status.delete.assert_awaited_once()
 
 
 if __name__ == "__main__":
