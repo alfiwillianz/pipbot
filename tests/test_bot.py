@@ -18,6 +18,7 @@ from bot.modules.ieee import (
     parse_ieee_response,
 )
 from bot.client import WebLinkBot
+from bot.utils import render_math
 
 
 ATOM_RESPONSE = b'''<?xml version="1.0" encoding="UTF-8"?>
@@ -81,6 +82,26 @@ class ArxivTests(unittest.TestCase):
 
     def test_skips_tldr_for_empty_abstract(self):
         self.assertIsNone(generate_tldr(""))
+
+    def test_renders_inline_latex_as_unicode_without_rewriting_prose(self):
+        rendered = render_math(r"The bound is $k \geq \log^2 n$.")
+        self.assertEqual(rendered, "The bound is 𝑘≥log²𝑛.")
+
+    @patch.dict(
+        "bot.utils.os.environ",
+        {"LLM_BASE_URL": "http://llm.test/v1/chat/completions", "LLM_MODEL": "router/fallback"},
+        clear=False,
+    )
+    @patch("bot.utils.urlopen")
+    def test_uses_env_llm_for_unsupported_math(self, mock_urlopen):
+        response = unittest.mock.Mock()
+        response.__enter__ = lambda value: response
+        response.__exit__ = unittest.mock.Mock(return_value=False)
+        response.read.return_value = b'{"choices":[{"message":{"content":"Converted x"}}]}'
+        mock_urlopen.return_value = response
+
+        self.assertEqual(render_math(r"The result is $\\custom{x}$."), "Converted x")
+        self.assertEqual(mock_urlopen.call_args.args[0].full_url, "http://llm.test/v1/chat/completions")
 
     def test_replaces_url_and_preserves_context(self):
         paper = parse_api_response(ATOM_RESPONSE, "2401.12345")

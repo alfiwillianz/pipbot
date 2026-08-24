@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 import discord
 
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
-from bot.utils import DeletableView
+from bot.utils import DeletableView, render_math
 
 
 IEEE_URL_RE = re.compile(
@@ -219,7 +219,9 @@ def article_embed(article: IEEEArticle, author: discord.abc.User, tldr: str | No
     embed = discord.Embed(
         title=article.title[:256],
         url=article.url,
-        description=article.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(article.abstract) > ABSTRACT_LIMIT else ""),
+        description=render_math(
+            article.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(article.abstract) > ABSTRACT_LIMIT else "")
+        ),
         color=discord.Color.blue(),
     )
     embed.set_author(name=f"IEEE:{article.article_number}")
@@ -228,7 +230,7 @@ def article_embed(article: IEEEArticle, author: discord.abc.User, tldr: str | No
     if article.publication_date:
         embed.add_field(name="Published", value=article.publication_date)
     if tldr:
-        embed.add_field(name="TLDR", value=tldr, inline=False)
+        embed.add_field(name="TLDR", value=render_math(tldr), inline=False)
     embed.set_footer(text=f"Posted by {author.display_name}")
     return embed
 

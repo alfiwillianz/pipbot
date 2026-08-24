@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 import discord
 
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
-from bot.utils import DeletableView
+from bot.utils import DeletableView, render_math
 
 
 DOI_URL_RE = re.compile(
@@ -99,7 +99,9 @@ def work_embed(work: CrossrefWork, author: discord.abc.User, tldr: str | None = 
     embed = discord.Embed(
         title=work.title[:256],
         url=work.url,
-        description=work.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(work.abstract) > ABSTRACT_LIMIT else ""),
+        description=render_math(
+            work.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(work.abstract) > ABSTRACT_LIMIT else "")
+        ),
         color=discord.Color.green(),
     )
     embed.set_author(name=f"DOI:{work.doi}")
@@ -108,7 +110,7 @@ def work_embed(work: CrossrefWork, author: discord.abc.User, tldr: str | None = 
     if work.published:
         embed.add_field(name="Published", value=work.published)
     if tldr:
-        embed.add_field(name="TLDR", value=tldr, inline=False)
+        embed.add_field(name="TLDR", value=render_math(tldr), inline=False)
     embed.set_footer(text=f"Posted by {author.display_name}")
     return embed
 

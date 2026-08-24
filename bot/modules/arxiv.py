@@ -18,7 +18,7 @@ from urllib.request import Request, urlopen
 
 import discord
 
-from bot.utils import DeletableView
+from bot.utils import DeletableView, render_math
 
 
 ARXIV_API_URL = "https://export.arxiv.org/api/query?id_list={}"
@@ -237,7 +237,9 @@ def paper_embed(paper: Paper, author: discord.abc.User, tldr: str | None = None)
     embed = discord.Embed(
         title=paper.title[:256],
         url=paper.abs_url,
-        description=paper.summary[: ABSTRACT_LIMIT - 3] + ("..." if len(paper.summary) > ABSTRACT_LIMIT else ""),
+        description=render_math(
+            paper.summary[: ABSTRACT_LIMIT - 3] + ("..." if len(paper.summary) > ABSTRACT_LIMIT else "")
+        ),
         color=discord.Color.dark_red(),
     )
     embed.set_author(name=f"arXiv:{paper.arxiv_id}")
@@ -246,7 +248,7 @@ def paper_embed(paper: Paper, author: discord.abc.User, tldr: str | None = None)
     if paper.published:
         embed.add_field(name="Published", value=paper.published.strftime("%Y-%m-%d"))
     if tldr:
-        embed.add_field(name="TLDR", value=tldr, inline=False)
+        embed.add_field(name="TLDR", value=render_math(tldr), inline=False)
     embed.set_footer(text=f"Posted by {author.display_name}")
     return embed
 

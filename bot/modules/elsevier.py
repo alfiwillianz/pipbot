@@ -15,7 +15,7 @@ import discord
 
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
 from bot.modules.crossref import DOI_URL_RE, extract_doi
-from bot.utils import DeletableView
+from bot.utils import DeletableView, render_math
 
 
 ELSEVIER_API_URL = "https://api.elsevier.com/content/abstract/doi/{}"
@@ -124,7 +124,9 @@ def work_embed(work: ElsevierWork, author: discord.abc.User, tldr: str | None = 
     embed = discord.Embed(
         title=work.title[:256],
         url=work.url,
-        description=work.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(work.abstract) > ABSTRACT_LIMIT else ""),
+        description=render_math(
+            work.abstract[: ABSTRACT_LIMIT - 3] + ("..." if len(work.abstract) > ABSTRACT_LIMIT else "")
+        ),
         color=discord.Color.orange(),
     )
     embed.set_author(name=f"Elsevier DOI:{work.doi}")
@@ -133,7 +135,7 @@ def work_embed(work: ElsevierWork, author: discord.abc.User, tldr: str | None = 
     if work.published:
         embed.add_field(name="Published", value=work.published)
     if tldr:
-        embed.add_field(name="TLDR", value=tldr, inline=False)
+        embed.add_field(name="TLDR", value=render_math(tldr), inline=False)
     embed.set_footer(text=f"Posted by {author.display_name}")
     return embed
 
