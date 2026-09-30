@@ -16,8 +16,9 @@ from urllib.request import Request, urlopen
 
 import discord
 
+from bot.browser import get_browser, get_context, get_request
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
-from bot.utils import DeletableView, render_math
+from bot.utils import DeletableView, RetryView, render_math
 
 
 IEEE_URL_RE = re.compile(
@@ -27,6 +28,9 @@ IEEE_URL_RE = re.compile(
 IEEE_API_URL = "https://ieeexploreapi.ieee.org/api/v1/search/articles"
 IEEE_API_KEY = os.environ.get("IEEE_API_KEY", "")
 IEEE_PDF_URL = "https://ieeexplore.ieee.org/stampPDF/getPDF.jsp?tp=&arnumber={}"
+# IEEE only serves full-text PDFs to subscribing institutions' networks; route
+# the PDF fetch through the campus VPN's SOCKS proxy. Empty string disables it.
+IEEE_SOCKS_PROXY = os.environ.get("IEEE_SOCKS_PROXY", "socks5://prts-vpn:1080")
 PAPER_CACHE_TTL = timedelta(days=14)
 LOGGER = logging.getLogger(__name__)
 
@@ -164,10 +168,16 @@ def fetch_pdf(article_number: str) -> bytes:
         return _fetch_pdf_http(article_number)
 
     with sync_playwright() as playwright:
-        browser = playwright.chromium.launch(headless=True)
-        context = browser.new_context(
-            user_agent="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
-        )
+        launch_kwargs = {"headless": True}
+        if IEEE_SOCKS_PROXY:
+            launch_kwargs["proxy"] = {"server": IEEE_SOCKS_PROXY}
+        context_kwargs = {
+            "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36"
+        }
+        # launch_kwargs/context_kwargs only reach the Chromium path; Obscura is
+        # configured on its server (see compose.yaml).
+        browser = get_browser(playwright, **launch_kwargs)
+        context = get_context(browser, **context_kwargs)
         try:
             page = context.new_page()
             page.goto(
@@ -175,7 +185,8 @@ def fetch_pdf(article_number: str) -> bytes:
                 wait_until="domcontentloaded",
                 timeout=60_000,
             )
-            response = context.request.get(
+            request = get_request(playwright, context, proxy=launch_kwargs.get("proxy"), **context_kwargs)
+            response = request.get(
                 IEEE_PDF_URL.format(article_number),
                 headers={"Referer": f"https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber={article_number}"},
                 timeout=120_000,
@@ -276,7 +287,15 @@ class IEEEModule:
             )
             await message.delete()
         except (json.JSONDecodeError, ValueError):
-            await message.reply("I couldn't find that IEEE paper.", mention_author=False)
+            await message.reply(
+                "I couldn't find that IEEE paper.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )
         except Exception:
             LOGGER.exception("Failed to process IEEE article %s", article_number)
-            await message.reply("I couldn't retrieve that IEEE paper right now.", mention_author=False)
+            await message.reply(
+                "I couldn't retrieve that IEEE paper right now.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )

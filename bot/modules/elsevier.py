@@ -15,7 +15,7 @@ import discord
 
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
 from bot.modules.crossref import DOI_URL_RE, extract_doi
-from bot.utils import DeletableView, render_math
+from bot.utils import DeletableView, RetryView, render_math
 
 
 ELSEVIER_API_URL = "https://api.elsevier.com/content/abstract/doi/{}"
@@ -170,7 +170,15 @@ class ElsevierModule:
             )
             await message.delete()
         except (ET.ParseError, ValueError):
-            await message.reply("I couldn't find that Elsevier paper.", mention_author=False)
+            await message.reply(
+                "I couldn't find that Elsevier paper.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )
         except Exception:
             LOGGER.exception("Failed to process Elsevier reference %s", doi or pii)
-            await message.reply("I couldn't retrieve that Elsevier paper right now.", mention_author=False)
+            await message.reply(
+                "I couldn't retrieve that Elsevier paper right now.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )

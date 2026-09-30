@@ -6,7 +6,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
-from bot.modules.arxiv import extract_arxiv_id, generate_tldr, paper_message_content, parse_api_response
+from bot.modules.arxiv import LLM_TIMEOUT, extract_arxiv_id, generate_tldr, paper_message_content, parse_api_response
 from bot.modules.crossref import extract_doi, parse_crossref_response, work_message_content
 from bot.modules.elsevier import extract_elsevier_doi, extract_elsevier_pii, parse_elsevier_response
 from bot.modules.ieee import (
@@ -79,6 +79,7 @@ class ArxivTests(unittest.TestCase):
         payload = mock_urlopen.call_args.args[0].data
         self.assertIn(b'"temperature": 0.1', payload)
         self.assertIn(b'"stream": false', payload)
+        self.assertEqual(mock_urlopen.call_args.kwargs["timeout"], LLM_TIMEOUT)
 
     def test_skips_tldr_for_empty_abstract(self):
         self.assertIsNone(generate_tldr(""))

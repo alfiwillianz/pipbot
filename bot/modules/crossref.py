@@ -14,7 +14,7 @@ from urllib.request import Request, urlopen
 import discord
 
 from bot.modules.arxiv import ABSTRACT_LIMIT, generate_tldr
-from bot.utils import DeletableView, render_math
+from bot.utils import DeletableView, RetryView, render_math
 
 
 DOI_URL_RE = re.compile(
@@ -144,7 +144,15 @@ class CrossrefModule:
             )
             await message.delete()
         except (json.JSONDecodeError, ValueError):
-            await message.reply("I couldn't find that DOI paper.", mention_author=False)
+            await message.reply(
+                "I couldn't find that DOI paper.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )
         except Exception:
             LOGGER.exception("Failed to process DOI %s", doi)
-            await message.reply("I couldn't retrieve that DOI paper right now.", mention_author=False)
+            await message.reply(
+                "I couldn't retrieve that DOI paper right now.",
+                mention_author=False,
+                view=RetryView(lambda: self.handle(message)),
+            )

@@ -6,6 +6,7 @@ import re
 import json
 import os
 import unicodedata
+from collections.abc import Awaitable, Callable
 from urllib.request import Request, urlopen
 
 import discord
@@ -91,3 +92,23 @@ class DeletableView(discord.ui.View):
         await interaction.response.defer()
         if interaction.message:
             await interaction.message.delete()
+
+
+class RetryView(discord.ui.View):
+    """Offer to rerun a failed web-link request."""
+
+    def __init__(self, retry: Callable[[], Awaitable[None]]) -> None:
+        super().__init__(timeout=300)
+        self._retry = retry
+        self.retry_button = discord.ui.Button(label="Try Again", style=discord.ButtonStyle.primary)
+        self.retry_button.callback = self._retry_callback
+        self.add_item(self.retry_button)
+
+    async def _retry_callback(self, interaction: discord.Interaction) -> None:
+        self.retry_button.disabled = True
+        await interaction.response.edit_message(view=self)
+        try:
+            await self._retry()
+        finally:
+            if interaction.message:
+                await interaction.message.delete()
